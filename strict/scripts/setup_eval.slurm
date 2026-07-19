@@ -2,6 +2,7 @@
 # One-time Hopper setup for BabyLM Strict eval.
 # Installs strict/requirements.txt into the shared ebdlm-babylm .venv (via that
 # venv's pip) and downloads evaluation_data onto $SCRATCH for later GPU jobs.
+# Skips steps that are already done (safe to re-run).
 #
 # Before submitting, put your Hugging Face token in a single-line file:
 #   mkdir -p ${SCRATCH}/secrets
@@ -43,25 +44,48 @@ if [ ! -x "${PYTHON}" ]; then
   exit 1
 fi
 
-if [ ! -f "${HF_TOKEN_FILE}" ]; then
-  echo "Missing HF token file: ${HF_TOKEN_FILE}" >&2
-  echo "Create it (one line, chmod 600), then resubmit." >&2
-  exit 1
-fi
-export HF_TOKEN
-HF_TOKEN="$(tr -d '[:space:]' < "${HF_TOKEN_FILE}")"
-if [ -z "${HF_TOKEN}" ]; then
-  echo "HF token file is empty: ${HF_TOKEN_FILE}" >&2
-  exit 1
-fi
-
 cd "${EVAL_REPO}/strict"
 
-echo "Installing ${EVAL_REPO}/strict/requirements.txt into ${VENV}"
-"${PYTHON}" -m pip install -r requirements.txt
+# --- deps (skip if already importable) ---
+if "${PYTHON}" -c "import scipy, pandas, statsmodels, datasets, huggingface_hub" 2>/dev/null; then
+  echo "Eval deps already present in ${VENV}"
+else
+  echo "Installing ${EVAL_REPO}/strict/requirements.txt into ${VENV}"
+  "${PYTHON}" -m pip install -r requirements.txt
+fi
 
-echo "Downloading evaluation_data (scripts.download_evals)"
-"${PYTHON}" -m scripts.download_evals
+# --- data download (skip if core fast_eval trees exist) ---
+need_download=0
+for p in \
+  evaluation_data/fast_eval/blimp_fast \
+  evaluation_data/fast_eval/supplement_fast \
+  evaluation_data/fast_eval/entity_tracking_fast \
+  evaluation_data/fast_eval/reading/reading_data.csv \
+  evaluation_data/fast_eval/ewok_fast.zip
+do
+  if [ ! -e "${p}" ]; then
+    need_download=1
+    break
+  fi
+done
+
+if [ "${need_download}" -eq 0 ]; then
+  echo "evaluation_data already present; skipping download"
+else
+  if [ ! -f "${HF_TOKEN_FILE}" ]; then
+    echo "Missing HF token file: ${HF_TOKEN_FILE}" >&2
+    echo "Create it (one line, chmod 600), then resubmit." >&2
+    exit 1
+  fi
+  export HF_TOKEN
+  HF_TOKEN="$(tr -d '[:space:]' < "${HF_TOKEN_FILE}")"
+  if [ -z "${HF_TOKEN}" ]; then
+    echo "HF token file is empty: ${HF_TOKEN_FILE}" >&2
+    exit 1
+  fi
+  echo "Downloading evaluation_data (scripts.download_evals)"
+  "${PYTHON}" -m scripts.download_evals
+fi
 
 # Zip entries are already prefixed evaluation_data/fast_eval/ewok_fast/...;
 # extract into strict/ (.), not into evaluation_data/fast_eval/.
@@ -86,7 +110,7 @@ for p in \
   evaluation_data/fast_eval/ewok_fast
 do
   if [ ! -e "${p}" ]; then
-    echo "Missing after download: ${p}" >&2
+    echo "Missing after setup: ${p}" >&2
     exit 1
   fi
 done

@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-time Hopper setup for BabyLM Strict eval.
-# Installs strict/requirements.txt into the shared ebdlm-babylm uv .venv and
-# downloads evaluation_data onto $SCRATCH (visible to all later GPU eval jobs).
+# Installs strict/requirements.txt into the shared ebdlm-babylm .venv (via that
+# venv's pip) and downloads evaluation_data onto $SCRATCH for later GPU jobs.
 #
 # Before submitting, put your Hugging Face token in a single-line file:
 #   mkdir -p ${SCRATCH}/secrets
@@ -33,8 +33,7 @@ HF_TOKEN_FILE="${HF_TOKEN_FILE:-${SCRATCH}/secrets/hf_token}"
 
 export TMPDIR="${SCRATCH}/tmp"
 export HF_HOME="${HF_HOME:-${SCRATCH}/huggingface}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-${SCRATCH}/uv_cache}"
-mkdir -p "${TMPDIR}" "${HF_HOME}" "${UV_CACHE_DIR}"
+mkdir -p "${TMPDIR}" "${HF_HOME}"
 
 module load hosts/hopper gnu12/12.3.0 python/3.11.7-cx
 
@@ -59,12 +58,7 @@ fi
 cd "${EVAL_REPO}/strict"
 
 echo "Installing ${EVAL_REPO}/strict/requirements.txt into ${VENV}"
-export PATH="${HOME}/.local/bin:${PATH}"
-if command -v uv >/dev/null 2>&1; then
-  uv pip install -r requirements.txt --python "${PYTHON}"
-else
-  "${PYTHON}" -m pip install -r requirements.txt
-fi
+"${PYTHON}" -m pip install -r requirements.txt
 
 echo "Downloading evaluation_data (scripts.download_evals)"
 "${PYTHON}" -m scripts.download_evals

@@ -1,16 +1,16 @@
 #!/bin/bash
-# One-time Hopper setup for BabyLM Strict eval.
-# Installs strict/requirements.txt into the shared ebdlm-babylm .venv (via that
-# venv's pip) and downloads evaluation_data onto $SCRATCH for later GPU jobs.
-# Skips steps that are already done (safe to re-run).
+# One-time Hopper setup for BabyLM Strict eval DATA only.
+#
+# Does NOT modify the ebdlm-babylm training .venv (no pip install).
+# Use the existing training venv as-is for eval jobs.
 #
 # Before submitting, put your Hugging Face token in a single-line file:
 #   mkdir -p ${SCRATCH}/secrets
 #   printf '%s\n' 'hf_...' > ${SCRATCH}/secrets/hf_token
 #   chmod 600 ${SCRATCH}/secrets/hf_token
 #
-# Prerequisite: ${SCRATCH}/ebdlm-babylm/.venv from setup_hopper_env.slurm
-#               ${SCRATCH}/babylm-eval cloned
+# Prerequisite: ${SCRATCH}/babylm-eval cloned
+#               ${SCRATCH}/ebdlm-babylm/.venv (unchanged; for download_evals only)
 #
 #   sbatch strict/scripts/setup_eval.slurm
 #
@@ -46,15 +46,7 @@ fi
 
 cd "${EVAL_REPO}/strict"
 
-# --- deps (skip if already importable) ---
-if "${PYTHON}" -c "import scipy, pandas, statsmodels, datasets, huggingface_hub" 2>/dev/null; then
-  echo "Eval deps already present in ${VENV}"
-else
-  echo "Installing ${EVAL_REPO}/strict/requirements.txt into ${VENV}"
-  "${PYTHON}" -m pip install -r requirements.txt
-fi
-
-# --- data download (skip if core fast_eval trees exist) ---
+# --- data download only (never pip-install into the training venv) ---
 need_download=0
 for p in \
   evaluation_data/fast_eval/blimp_fast \
@@ -74,7 +66,6 @@ if [ "${need_download}" -eq 0 ]; then
 else
   if [ ! -f "${HF_TOKEN_FILE}" ]; then
     echo "Missing HF token file: ${HF_TOKEN_FILE}" >&2
-    echo "Create it (one line, chmod 600), then resubmit." >&2
     exit 1
   fi
   export HF_TOKEN
@@ -87,8 +78,6 @@ else
   "${PYTHON}" -m scripts.download_evals
 fi
 
-# Zip entries are already prefixed evaluation_data/fast_eval/ewok_fast/...;
-# extract into strict/ (.), not into evaluation_data/fast_eval/.
 if [ -f evaluation_data/fast_eval/ewok_fast.zip ] && [ ! -d evaluation_data/fast_eval/ewok_fast ]; then
   echo "Unzipping ewok_fast.zip"
   "${PYTHON}" - <<'PY'
@@ -115,4 +104,6 @@ do
   fi
 done
 
-echo "OK: eval deps in ${VENV}; data under ${EVAL_REPO}/strict/evaluation_data"
+echo "OK: data under ${EVAL_REPO}/strict/evaluation_data"
+echo "NOTE: training venv was not modified. If it was previously altered by an"
+echo "older setup_eval, restore with: sbatch ${EBDLM_REPO}/scripts/setup_hopper_env.slurm"

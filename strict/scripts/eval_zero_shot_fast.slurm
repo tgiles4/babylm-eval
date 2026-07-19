@@ -10,8 +10,11 @@
 #
 # Submit from babylm-eval repo root (or anywhere; script cds to SCRATCH copy):
 #   sbatch strict/scripts/eval_zero_shot_fast.slurm <run_name> <revision> <backend>
-#   sbatch strict/scripts/eval_zero_shot_fast.slurm good-cloud-28 last diffusion
-#   sbatch strict/scripts/eval_zero_shot_fast.slurm good-cloud-28 last energy
+#   sbatch --job-name=eval-gc28-diff strict/scripts/eval_zero_shot_fast.slurm good-cloud-28 last diffusion
+#   sbatch --job-name=eval-ag25-diff strict/scripts/eval_zero_shot_fast.slurm avid-gorge-25 last diffusion
+#
+# Results: strict/results/<run_name>/<revision>/zero_shot/<backend>/...
+# A100 defaults: BATCH_SIZE=64, MC_BATCH_SIZE=128 (override via env if needed).
 #
 #SBATCH --job-name=babylm-eval-fast
 #SBATCH --qos=gpu
@@ -25,7 +28,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=08:00:00
+#SBATCH --time=04:00:00
 
 set -euo pipefail
 
@@ -78,13 +81,17 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONPATH="${EVAL_REPO}/strict${PYTHONPATH:+:${PYTHONPATH}}"
 export EBDLM_ROOT="${EBDLM_REPO}"
-export MC_NUM="${MC_NUM:-128}"
-export MC_BATCH_SIZE="${MC_BATCH_SIZE:-16}"
-export BATCH_SIZE="${BATCH_SIZE:-8}"
 
+# A100 80GB: pack the full MC budget in one forward; larger example batches.
+export MC_NUM="${MC_NUM:-128}"
+export MC_BATCH_SIZE="${MC_BATCH_SIZE:-128}"
+export BATCH_SIZE="${BATCH_SIZE:-64}"
+
+echo "RUN_NAME=${RUN_NAME}"
 echo "MODEL_PATH_OR_NAME=${MODEL_PATH_OR_NAME}"
 echo "REVISION_NAME=${REVISION_NAME}"
 echo "BACKEND=${BACKEND}"
+echo "BATCH_SIZE=${BATCH_SIZE} MC_NUM=${MC_NUM} MC_BATCH_SIZE=${MC_BATCH_SIZE}"
 echo "PYTHON=${PYTHON}"
 echo "EBDLM_ROOT=${EBDLM_ROOT}"
 

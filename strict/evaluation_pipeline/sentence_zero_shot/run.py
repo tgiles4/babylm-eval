@@ -98,6 +98,16 @@ def _resolve_local_revision_path(model_path_or_name: str, revision_name: str | N
     return model_path_or_name
 
 
+def _result_model_name(model_path_or_name: str) -> str:
+    """Prefer runs/<run>/hf → <run> so parallel jobs don't all write results/hf/."""
+    path = pathlib.Path(model_path_or_name)
+    if path.name == "hf" and path.parent.name:
+        return path.parent.name
+    if path.parent.name == "hf" and path.parent.parent.name:
+        return path.parent.parent.name
+    return path.stem
+
+
 def get_temperatures(args: argparse.ArgumentParser):
     if args.max_temperature is None:
         temperatures = torch.ones(1) * args.min_temperature
@@ -189,7 +199,7 @@ def main():
     if args.images_path is not None:
         assert args.batch_size == 1, "Multimodal only works in batch size 1!"
     dataset = args.data_path.stem
-    args.model_name = pathlib.Path(args.model_path_or_name).stem
+    args.model_name = _result_model_name(args.model_path_or_name)
     if args.revision_name is None:
         revision_name = "main"
     else:

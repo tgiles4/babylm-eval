@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoModelForMaskedLM, AutoTokenizer, AutoModelForSeq2SeqLM, AutoProcessor
-from evaluation_pipeline.reading.evaluation_functions import get_p2_mntp, get_p2, get_p2_mlm, get_p2_enc_dec
+from evaluation_pipeline.reading.evaluation_functions import get_p2_mntp, get_p2, get_p2_mlm, get_p2_enc_dec, get_p2_diffusion
 from tqdm import tqdm
 import pandas as pd
 import argparse
@@ -20,8 +20,10 @@ def parse_args():
     parser.add_argument("--output_dir", default="results", type=pathlib.Path, help="The output directory where the results will be written.")
     parser.add_argument("--data_path", required=True, type=pathlib.Path, help="Path to file containing the lambada dataset, we expect it to be in a JSONL format.")
     parser.add_argument("--model_path_or_name", required=True, type=str, help="The path/name to/of the huggingface folder/repository.")
-    parser.add_argument("--backend", required=True, type=str, help="The evaluation backend strategy.", choices=["mlm", "mntp", "causal", "enc_dec"])
+    parser.add_argument("--backend", required=True, type=str, help="The evaluation backend strategy.", choices=["mlm", "mntp", "causal", "enc_dec", "diffusion"])
     parser.add_argument("--number_of_mask_tokens_to_append", default=3, type=int, help="When using either mlm or mntp, the number of mask tokens to append to approximate causal generation.")
+    parser.add_argument("--mc_num", default=128, type=int, help="Monte Carlo samples for diffusion reading (multi-token words).")
+    parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples for diffusion reading.")
     parser.add_argument("--revision_name", default=None, type=str, help="Name of the checkpoint/version of the model to test. (If None, the main will be used)")
 
     args = parser.parse_args()
@@ -47,23 +49,48 @@ if __name__ == "__main__":
     df = pd.read_csv(args.data_path, dtype={'item': str})
     df["item"] = df["item"].fillna("None")
 
+    model_path = pathlib.Path(args.model_path_or_name)
+    if args.revision_name:
+        candidate = model_path / args.revision_name
+        if candidate.is_dir() and (candidate / "config.json").is_file():
+            model_path = candidate
+            load_revision = None
+        else:
+            load_revision = args.revision_name
+    else:
+        load_revision = None
+    model_path_str = str(model_path)
+
+    # bf16/fp16 required when the checkpoint requests flash_attention_2
+    load_kwargs = {
+        "trust_remote_code": True,
+        "revision": load_revision,
+    }
+    if DEVICE.type == "cuda":
+        load_kwargs["dtype"] = torch.bfloat16
+
     if args.backend == "causal":
-        model = AutoModelForCausalLM.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
-    elif args.backend in ["mlm", "mntp"]:
-        model = AutoModelForMaskedLM.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
+        model = AutoModelForCausalLM.from_pretrained(model_path_str, **load_kwargs)
+    elif args.backend in ["mlm", "mntp", "diffusion"]:
+        model = AutoModelForMaskedLM.from_pretrained(model_path_str, **load_kwargs)
     elif args.backend == "enc_dec":
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path_str, **load_kwargs)
+    else:
+        raise ValueError(f"Unknown backend: {args.backend}")
 
     model.to(DEVICE)
     model.eval()
     try:
-        tokenizer = AutoProcessor.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
+        tokenizer = AutoProcessor.from_pretrained(
+            model_path_str, trust_remote_code=True, revision=load_revision
+        )
     except (ValueError, KeyError):
         # transformers-5.x-saved checkpoints record tokenizer_class
         # "TokenizersBackend", unknown to 4.x. Load tokenizer.json directly.
         from transformers import PreTrainedTokenizerFast
         tokenizer = PreTrainedTokenizerFast.from_pretrained(
-            args.model_path_or_name, revision=args.revision_name)
+            model_path_str, revision=load_revision
+        )
 
     if args.backend == "causal":
         p2_function = get_p2
@@ -73,6 +100,12 @@ if __name__ == "__main__":
         p2_function = partial(get_p2_mntp, num_mask_tokens=args.number_of_mask_tokens_to_append)
     elif args.backend == "enc_dec":
         p2_function = get_p2_enc_dec
+    elif args.backend == "diffusion":
+        p2_function = partial(
+            get_p2_diffusion,
+            mc_num=args.mc_num,
+            mc_batch_size=args.mc_batch_size,
+        )
 
     out = []
     prev_p2 = []

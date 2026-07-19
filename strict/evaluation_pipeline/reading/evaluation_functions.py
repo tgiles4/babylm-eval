@@ -1,7 +1,10 @@
+import math
+
 import torch
 import numpy as np
 
 from evaluation_pipeline.utils import get_logits
+from evaluation_pipeline.sentence_zero_shot.diffusion_likelihood import get_log_likelihood
 
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -156,6 +159,45 @@ def get_p2_mntp(sentence, word, model, tokenizer, num_mask_tokens=3):  # as get_
             sentence = sentence + t
         p_multi = np.prod(out_p)
         return p_multi, 1
+
+
+def get_p2_diffusion(sentence, word, model, tokenizer, mc_num=128, mc_batch_size=16):
+    """P(word | sentence) via LLaDA Eq. 6 conditional log-likelihood.
+
+    Prompt = tokenized context; answer = tokenized word (no specials). Returns
+    exp(log-likelihood) so callers can use -log(p) as surprisal, matching MLM/causal.
+    Single-token answers use mc_num=1 (LLaDA); multi-token uses the full budget.
+    """
+    prompt_ids = tokenizer(sentence, add_special_tokens=True)["input_ids"]
+    word_ids = tokenizer(word, add_special_tokens=False)["input_ids"]
+    if not word_ids:
+        raise ValueError(f"Empty tokenization for word={word!r}")
+
+    seq = torch.tensor(prompt_ids + word_ids, dtype=torch.long, device=DEVICE)
+    prompt_index = torch.zeros(seq.shape[0], dtype=torch.bool, device=DEVICE)
+    prompt_index[: len(prompt_ids)] = True
+
+    mask_id = getattr(model.config, "mask_token_id", None)
+    if mask_id is None:
+        mask_id = tokenizer.mask_token_id
+    if mask_id is None:
+        raise ValueError("Diffusion reading requires a mask_token_id on model or tokenizer.")
+
+    effective_mc = 1 if len(word_ids) == 1 else mc_num
+    effective_bs = 1 if effective_mc == 1 else min(mc_batch_size, effective_mc)
+    if effective_mc % effective_bs != 0:
+        effective_bs = 1
+
+    log_lik = get_log_likelihood(
+        model,
+        seq,
+        prompt_index,
+        mask_id=mask_id,
+        mc_num=effective_mc,
+        mc_batch_size=effective_bs,
+    )
+    p = math.exp(log_lik)
+    return max(p, 1e-300), int(len(word_ids) > 1)
 
 
 def get_p2_enc_dec(sentence, word, model, tokenizer):  # as get_p if len(tokenizer(word)) == 1; else, sums logP of subword tokens

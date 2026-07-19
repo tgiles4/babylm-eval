@@ -34,7 +34,7 @@ class CompletionRankingDataset(Dataset):
         self.tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else self.processor
 
         if self.tokenizer.pad_token_id is None:
-            if self.backend == "causal":
+            if self.backend in ("causal", "diffusion", "energy"):
                 self.tokenizer.pad_token_id: int = self.tokenizer.eos_token_id
             else:
                 self.tokenizer.pad_token_id = self.tokenizer.cls_token_id
@@ -364,7 +364,7 @@ class CompletionRankingDataset(Dataset):
         metadata_keys: list[str] = [key for key in data_dict if key not in ["sentences", "completions", "prefixes", "label", "image"]]
         metadata: dict[str, str] = {key : data_dict[key] for key in metadata_keys}
 
-        if self.backend == "causal":
+        if self.backend in ("causal", "diffusion", "energy"):
             processed_sentence_dict: dict[str, torch.Tensor | None] = self.process_causal_sentences(sentence_dict, image)
         elif self.backend == "mlm":
             processed_sentence_dict = self.process_mlm_sentences(sentence_dict, image)
@@ -374,6 +374,8 @@ class CompletionRankingDataset(Dataset):
             processed_sentence_dict = self.process_enc_dec_mask_sentences(sentence_dict, image)
         elif self.backend == "enc_dec_prefix":
             processed_sentence_dict = self.process_enc_dec_prefix_sentences(sentence_dict, image)
+        else:
+            raise ValueError(f"Unknown backend: {self.backend}")
 
         return sentence_dict, processed_sentence_dict, label, metadata, uid
 
@@ -409,12 +411,16 @@ def get_collate_fn(args: argparse.ArgumentParser, pad_idx: int):
 
     if args.backend == "causal":
         return get_causal_collate_fn(pad_idx)
+    elif args.backend in ("diffusion", "energy"):
+        return get_diffusion_collate_fn(pad_idx)
     elif args.backend in ["mlm", "mntp"]:
         return get_mlm_collate_fn(pad_idx)
     elif args.backend == "enc_dec_mask":
         return get_enc_dec_mask_collate_fn(pad_idx)
     elif args.backend == "enc_dec_prefix":
         return get_enc_dec_prefix_collate_fn(pad_idx)
+    else:
+        raise ValueError(f"Unknown backend: {args.backend}")
 
 
 def get_causal_collate_fn(pad_idx):
@@ -450,6 +456,46 @@ def get_causal_collate_fn(pad_idx):
         metadatas = [item[3] for item in batch]
         uids = [item[4] for item in batch]
         return sentence_dict, sentence_dict_with_padding, labels, metadatas, uids, images
+    return collate_fn
+
+
+def get_diffusion_collate_fn(pad_idx):
+    """Collate full sequences + phrase masks for LLaDA likelihood scoring.
+
+    Unlike causal, inputs are not shifted: the full sequence is scored with
+    Monte Carlo masking over the completion span (phrase_mask == 1).
+    """
+    def collate_fn(batch):
+        num_sentences = len([key for key in batch[0][1].keys() if key.endswith("tokens")])
+        sentence_dict_with_padding = {}
+        for sentence_idx in range(num_sentences):
+            tokens = [item[1][f"sentence_{sentence_idx}_tokens"] for item in batch]
+            sentence_dict_with_padding[f"sentence_{sentence_idx}_tokens"] = pad_sequence(
+                tokens, batch_first=True, padding_value=pad_idx
+            )
+
+            attention_masks = [item[1][f"sentence_{sentence_idx}_attn_mask"] for item in batch]
+            sentence_dict_with_padding[f"sentence_{sentence_idx}_attn_mask"] = pad_sequence(
+                attention_masks, batch_first=True, padding_value=0
+            )
+
+            phrase_masks = [item[1][f"sentence_{sentence_idx}_phrase_mask"] for item in batch]
+            sentence_dict_with_padding[f"sentence_{sentence_idx}_phrase_mask"] = pad_sequence(
+                phrase_masks, batch_first=True, padding_value=0
+            )
+
+            images = [item[1][f"sentence_{sentence_idx}_image"] for item in batch]
+            if all(image is None for image in images):
+                images = None
+            else:
+                images = torch.cat(images, dim=0)
+
+        sentence_dict = [item[0] for item in batch]
+        labels = [item[2] for item in batch]
+        metadatas = [item[3] for item in batch]
+        uids = [item[4] for item in batch]
+        return sentence_dict, sentence_dict_with_padding, labels, metadatas, uids, images
+
     return collate_fn
 
 

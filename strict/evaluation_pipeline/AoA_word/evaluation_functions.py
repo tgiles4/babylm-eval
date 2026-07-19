@@ -35,12 +35,16 @@ class StepSurprisalExtractor:
         backend: str,
         device: str,
         model_cache_dir: Path = None,
+        mc_num: int = 128,
+        mc_batch_size: int = 16,
     ) -> None:
         self.model_name = model_name
         self.model_cache_dir = model_cache_dir
         self.backend = backend
         self.config = config
         self.device = device
+        self.mc_num = mc_num
+        self.mc_batch_size = mc_batch_size
         self.current_step = None
         logger.info(f"Using device: {self.device}")
         self._validate_config()
@@ -53,7 +57,7 @@ class StepSurprisalExtractor:
     def load_model_for_step(self, step: int) -> AutoModelForCausalLM:
         """Load model and tokenizer for a specific step."""
         try:
-            if self.backend in ["mlm", "mntp"]:
+            if self.backend in ["mlm", "mntp", "diffusion"]:
                 model = AutoModelForMaskedLM.from_pretrained(
                     self.model_name, trust_remote_code=True, revision=step
                 )
@@ -66,7 +70,10 @@ class StepSurprisalExtractor:
                     self.model_name, trust_remote_code=True, revision=step
                 )
             else:
-                raise f"The backend {self.backend} is not implemented, please implemented yourself or raise an issue on the GitHub!"
+                raise ValueError(
+                    f"The backend {self.backend} is not implemented, please implement it yourself "
+                    "or raise an issue on the GitHub!"
+                )
             model = model.to(self.device)
             model.eval()
         except Exception as e:
@@ -114,6 +121,10 @@ class StepSurprisalExtractor:
                 return self.compute_surprisal_mlm(
                     model, processor, tokenizer, context, target_word, use_bos_only
                 )
+            elif self.backend == "diffusion":
+                return self.compute_surprisal_diffusion(
+                    model, processor, tokenizer, context, target_word, use_bos_only
+                )
             elif self.backend == "enc_dec_mask":
                 return self.compute_surprisal_enc_dec_mask(
                     model, processor, tokenizer, context, target_word, use_bos_only
@@ -123,7 +134,7 @@ class StepSurprisalExtractor:
                     model, processor, tokenizer, context, target_word, use_bos_only
                 )
             else:
-                raise "Unknown backend!"
+                raise ValueError(f"Unknown backend: {self.backend}")
         except Exception as e:
             logger.error(f"Error in compute surprisal: {e!s}")
             return float("nan")
@@ -321,6 +332,71 @@ class StepSurprisalExtractor:
             ).squeeze(-1)  # B
             surprisal = -target_log_probs.sum().item()
         return surprisal
+
+    def compute_surprisal_diffusion(
+        self,
+        model: AutoModelForCausalLM,
+        processor: AutoProcessor,
+        tokenizer: AutoTokenizer,
+        context: str,
+        target_word: str,
+        use_bos_only: bool = True,
+    ) -> float:
+        """Word surprisal via LLaDA Eq. 6 (-conditional log-likelihood of the word)."""
+        from evaluation_pipeline.sentence_zero_shot.diffusion_likelihood import (
+            get_log_likelihood,
+        )
+
+        if use_bos_only:
+            bos_token = tokenizer.bos_token
+            input_text = bos_token + target_word
+        else:
+            input_text = context + target_word
+
+        tokenizer_output = processor(
+            text=input_text,
+            return_offsets_mapping=True,
+            add_special_tokens=not use_bos_only,
+        )
+        tokens = tokenizer_output["input_ids"]
+        if len(tokens) == 1 and isinstance(tokens[0], list):
+            tokens = tokens[0]
+            offset_mapping = tokenizer_output["offset_mapping"][0]
+        else:
+            offset_mapping = tokenizer_output["offset_mapping"]
+
+        start_char_idx = len(input_text) - len(target_word)
+        prompt_index = []
+        for start, end in offset_mapping:
+            prompt_index.append(not (end > start_char_idx))
+        if not any(not p for p in prompt_index):
+            return float("nan")
+
+        seq = torch.tensor(tokens, dtype=torch.long, device=self.device)
+        prompt_index = torch.tensor(prompt_index, dtype=torch.bool, device=self.device)
+        mask_id = getattr(model.config, "mask_token_id", None)
+        if mask_id is None:
+            mask_id = tokenizer.mask_token_id
+        if mask_id is None:
+            raise ValueError("Diffusion AoA requires mask_token_id on model or tokenizer.")
+
+        answer_len = int((~prompt_index).sum().item())
+        mc_num = getattr(self, "mc_num", 128)
+        mc_batch_size = getattr(self, "mc_batch_size", 16)
+        effective_mc = 1 if answer_len == 1 else mc_num
+        effective_bs = 1 if effective_mc == 1 else min(mc_batch_size, effective_mc)
+        if effective_mc % effective_bs != 0:
+            effective_bs = 1
+
+        log_lik = get_log_likelihood(
+            model,
+            seq,
+            prompt_index,
+            mask_id=mask_id,
+            mc_num=effective_mc,
+            mc_batch_size=effective_bs,
+        )
+        return -log_lik
 
     def process_mlm_input(
         self,

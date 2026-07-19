@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
         "--backend",
         type=str,
         default="causal",
-        choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix"],
+        choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix", "diffusion"],
     )
     parser.add_argument(
         "-t",
@@ -72,6 +72,18 @@ def parse_args() -> argparse.Namespace:
         default=0,
         type=int,
         help="Minimum number of contexts for a given word to be evaluated"
+    )
+    parser.add_argument(
+        "--mc_num",
+        default=128,
+        type=int,
+        help="Monte Carlo samples for diffusion AoA (multi-token words).",
+    )
+    parser.add_argument(
+        "--mc_batch_size",
+        default=16,
+        type=int,
+        help="Mini-batch size over Monte Carlo samples for diffusion AoA.",
     )
     return parser.parse_args()
 
@@ -129,6 +141,8 @@ def main() -> None:
         model_name=args.model_name,
         backend=args.backend,
         device=device,
+        mc_num=args.mc_num,
+        mc_batch_size=args.mc_batch_size,
     )
 
     logger.info("Computing surprisal across training steps")

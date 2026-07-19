@@ -127,18 +127,18 @@ Finally, the EWoK fast dataset, which should be located under `evaluation_data/f
 
 Use the following shell script to evaluate on the full zero-shot evaluations:
 ```bash
-./eval_zero_shot.sh <path_to_model> <architecture (causal/mntp/mlm/enc_dec_mask/enc_dec_prefix)> <eval_dir (optional, default:evaluation_data/full_eval)>
+./eval_zero_shot.sh <path_to_model> <architecture (causal/mntp/mlm/enc_dec_mask/enc_dec_prefix/diffusion/energy)> <eval_dir (optional, default:evaluation_data/full_eval)>
 ```
 
 Use the following shell script to evaluate on the fast zero-shot evaluations:
 ```bash
-./eval_zero_shot_fast.sh <path_to_model> <revision_name> <architecture (causal/mntp/mlm/enc_dec_mask/enc_dec_prefix)> <eval_dir (optional, default:evaluation_data/fast_eval)>
+./eval_zero_shot_fast.sh <path_to_model> <revision_name> <architecture (causal/mntp/mlm/enc_dec_mask/enc_dec_prefix/diffusion/energy)> <eval_dir (optional, default:evaluation_data/fast_eval)>
 ```
 
 > [!Note]
 > The revision name indicates the checkpoint to use (for example in the gpt-bert baselines `chck_1M` is the model trained for about 1M words).
 
-These will work out of the box if you use a HuggingFace-based model. In the case you are not, you can either go to the `hf_conversion_tutorial` folder to create a HF repository or adapt the code to work with a pure PyTorch implementation (it should not be too complicated). The implementation currently only supports three types of trained langauge modeling tasks: causal, mlm, and mntp (mlm shifted similarly to causal). If another objective (like diffusion for example) was used to train the models, you will need to edit the files.
+These will work out of the box if you use a HuggingFace-based model. In the case you are not, you can either go to the `hf_conversion_tutorial` folder to create a HF repository or adapt the code to work with a pure PyTorch implementation (it should not be too complicated). The implementation supports causal, mlm, mntp (mlm shifted similarly to causal), encoder-decoder, **diffusion** (LLaDA Eq. 6 Monte Carlo likelihood; see `--mc_num` / `--mc_batch_size`), and **energy** (EDLM MC transition energy ranking; requires `--ebdlm_root` and an EDLM checkpoint with `energy_head`). On Hopper, use `scripts/eval_zero_shot_fast.slurm`.
 
 In addition we have added a script called `eval_zero_shot_fast_all_revisions.sh` to evaluate all the checkpoints in a single call. To make sure this work with your naming scheme, make sure to edit the for-loops:
 ```bash
@@ -147,8 +147,9 @@ for i in {1..9}; do
 ```
 To make sure they fit your checkpoint naming scheme. To run the script type the following:
 ```bash
-./eval_zero_shot_fast_all_revisions.sh <path_to_model> <architecture (causal/mntp/mlm/enc_dec_mask/enc_dec_prefix)> <track> <eval_dir (optional, default:evaluation_data/fast_eval)>
+./eval_zero_shot_fast_all_revisions.sh <path_to_model> <architecture (causal/mntp/mlm/enc_dec_mask/enc_dec_prefix/diffusion/energy)> <track> <eval_dir (optional, default:evaluation_data/fast_eval)>
 ```
+
 > [!NOTE]
 > The code assumes that you trained on the entire budget (100M words for strict-small and 1B words for strict). Please change this if this is not the case.
 

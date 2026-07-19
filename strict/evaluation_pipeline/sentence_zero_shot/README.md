@@ -8,7 +8,7 @@ The `compute_results.py` files does all the computations of sentence logit score
 
 ## Dataset
 
-The `dataset.py` file defines the Dataset class used to iterate over the data. It processes the sentences in the causal, mlm, or mntp format. It handles the creation of the tokens, attention_mask, indices, and labels, as well as how to collate the datapoints to form a batch. In addition, the code only handle JSONL files for now.
+The `dataset.py` file defines the Dataset class used to iterate over the data. It processes the sentences in the causal, mlm, mntp, enc_dec, or diffusion format. It handles the creation of the tokens, attention_mask, indices, and labels, as well as how to collate the datapoints to form a batch. In addition, the code only handle JSONL files for now.
 
 ## Read Files
 
@@ -29,14 +29,27 @@ parser.add_argument("--task", default="blimp", type=str, help="The task that is 
                     choices=["blimp", "ewok", "entity_tracking"])
 
 parser.add_argument("--model_path_or_name", default="ltg/gpt-bert-babylm-small", type=str, help="Path to the model to evaluate.")
-parser.add_argument("--backend", default="mlm", type=str, help="The evaluation backend strategy", choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix"])
+parser.add_argument("--backend", default="mlm", type=str, help="The evaluation backend strategy", choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix", "diffusion"])
 
 parser.add_argument("--min_temperature", default=1.0, type=float, help="Minimum temperature to apply to the logits.")
 parser.add_argument("--max_temperature", default=None, type=float, help="Maximum temperature to apply to the logits. If None, onlny the minimum temperature will be considered.")
 parser.add_argument("--temperature_interval", default=0.05, type=float, help="Step size between temperatures applied to the logits.")
 parser.add_argument("--batch_size", default=64, type=int, help="Batch size for evaluation")
 parser.add_argument("--non_causal_batch_size", default=64, type=int, help="Mini-batch size to process each batch of inputs involving masked tokens")
+parser.add_argument("--mc_num", default=128, type=int, help="Monte Carlo samples for diffusion likelihood (LLaDA Eq. 6).")
+parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples for the diffusion backend.")
 parser.add_argument("--full_sentence_scores", action="store_true", help="Whether to use the entire sentence to calculate the sentence scores rather than just the completion. (Only implemented for EWoK)")
 parser.add_argument("--save_predictions", action="store_true", help="Whether or not to save predictions.")
 parser.add_argument("--revision_name", default=None, type=str, help="Name of the checkpoint/version of the model to test. (If None, the main will be used)")
+```
+
+### Diffusion backend
+
+Masked diffusion models (e.g. LLaDA / LLaDAMDLM) should use `--backend diffusion`. This scores each candidate with a Monte Carlo estimate of the conditional log-likelihood (LLaDA Eq. 6): the prompt stays clean and only the completion span is randomly masked. This is **not** the same as MLM pseudo-log-likelihood, and it does **not** use reverse sampling (`generate()`).
+
+Typical fast-eval invocation:
+
+```bash
+./eval_zero_shot_fast.sh <path_to_model> <revision_name> diffusion
+# optional: MC_NUM=32 BATCH_SIZE=4 ./eval_zero_shot_fast.sh ...
 ```

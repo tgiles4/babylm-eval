@@ -24,7 +24,7 @@ def _parse_arguments():
     parser.add_argument("--task", required=True, type=str, help="The task that is being evaluated.", choices=["blimp", "ewok", "entity_tracking", "comps", "vqa", "winoground",
                                                                                                               "global_piqa_parallel", "global_piqa_nonparallel"])
     parser.add_argument("--model_path_or_name", required=True, type=str, help="Path to the model to evaluate.")
-    parser.add_argument("--backend", required=True, type=str, help="The evaluation backend strategy", choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix"])
+    parser.add_argument("--backend", required=True, type=str, help="The evaluation backend strategy", choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix", "diffusion", "energy"])
 
     parser.add_argument("--output_dir", default="results", type=pathlib.Path, help="Path to the data directory")
     parser.add_argument("--images_path", default=None, type=str, help="Path or HuggingFace repository name to the images for the task.")
@@ -38,6 +38,9 @@ def _parse_arguments():
     parser.add_argument("--temperature_interval", default=0.05, type=float, help="Step size between temperatures applied to the logits.")
     parser.add_argument("--batch_size", default=64, type=int, help="Batch size for evaluation")
     parser.add_argument("--non_causal_batch_size", default=64, type=int, help="Mini-batch size to process each batch of inputs involving masked tokens")
+    parser.add_argument("--mc_num", default=128, type=int, help="Monte Carlo samples for diffusion/energy scoring.")
+    parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples for diffusion/energy backends.")
+    parser.add_argument("--ebdlm_root", default=None, type=str, help="Path to ebdlm-babylm repo (needed to import EDLM for --backend energy).")
     parser.add_argument("--full_sentence_scores", action="store_true", help="Whether to use the entire sentence to calculate the sentence scores rather than just the completion. (Only implemented for EWoK)")
     parser.add_argument("--save_predictions", action="store_true", help="Whether or not to save predictions.")
 
@@ -45,18 +48,54 @@ def _parse_arguments():
 
 
 def get_model(args: argparse.ArgumentParser):
-    if args.backend in ["mlm", "mntp"]:
-        model = AutoModelForMaskedLM.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
+    # bf16/fp16 required when the checkpoint requests flash_attention_2
+    model_path = _resolve_local_revision_path(args.model_path_or_name, args.revision_name)
+    load_kwargs = {
+        "trust_remote_code": True,
+        "revision": args.revision_name,
+    }
+    # When we already pointed at hf/<revision>, don't also pass revision to from_pretrained.
+    if pathlib.Path(model_path) != pathlib.Path(args.model_path_or_name):
+        load_kwargs.pop("revision", None)
+
+    if DEVICE.type == "cuda":
+        load_kwargs["dtype"] = torch.bfloat16
+
+    if args.backend == "energy":
+        from evaluation_pipeline.sentence_zero_shot.energy_score import load_edlm
+
+        model = load_edlm(
+            args.model_path_or_name,
+            revision=args.revision_name,
+            dtype=load_kwargs.get("dtype"),
+            ebdlm_root=args.ebdlm_root,
+        )
+    elif args.backend in ["mlm", "mntp", "diffusion"]:
+        model = AutoModelForMaskedLM.from_pretrained(model_path, **load_kwargs)
     elif args.backend == "causal":
-        model = AutoModelForCausalLM.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
+        model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
     elif args.backend in ["enc_dec_mask", "enc_dec_prefix"]:
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_path_or_name, trust_remote_code=True, revision=args.revision_name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path, **load_kwargs)
     else:
-        raise f"The backend {args.backend} is not implemented, please implemented yourself or raise an issue on the GitHub!"
+        raise ValueError(
+            f"The backend {args.backend} is not implemented, please implement it yourself "
+            "or raise an issue on the GitHub!"
+        )
     model = model.to(DEVICE)
     model.eval()
 
     return model
+
+
+def _resolve_local_revision_path(model_path_or_name: str, revision_name: str | None) -> str:
+    """If model_path/revision is a local HF export dir, use it directly."""
+    if not revision_name:
+        return model_path_or_name
+    base = pathlib.Path(model_path_or_name)
+    candidate = base / revision_name
+    if base.is_dir() and candidate.is_dir() and (candidate / "config.json").is_file():
+        return str(candidate)
+    return model_path_or_name
 
 
 def get_temperatures(args: argparse.ArgumentParser):
@@ -143,6 +182,10 @@ def save_predictions(args, predictions, best_temp):
 
 def main():
     args = _parse_arguments()
+    if args.backend in ("diffusion", "energy") and args.mc_num % args.mc_batch_size != 0:
+        raise ValueError(
+            f"--mc_num ({args.mc_num}) must be divisible by --mc_batch_size ({args.mc_batch_size})"
+        )
     if args.images_path is not None:
         assert args.batch_size == 1, "Multimodal only works in batch size 1!"
     dataset = args.data_path.stem

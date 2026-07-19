@@ -182,7 +182,7 @@ def _parse_arguments() -> argparse.Namespace:
 
     # Required parameters
     parser.add_argument("--model_path_or_name", required=True, type=pathlib.Path, help="Name of the model to collate the results from")
-    parser.add_argument("--backend", required=True, type=str, help="The backend used during evaluation", choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix"])
+    parser.add_argument("--backend", required=True, type=str, help="The backend used during evaluation", choices=["mlm", "causal", "mntp", "enc_dec_mask", "enc_dec_prefix", "diffusion", "energy"])
 
     parser.add_argument("--results_dir", default="results", type=pathlib.Path, help="Path to the results directory.")
     parser.add_argument("--revision_name", default="main", type=str, help="Name of the checkpoint/version of the model to test.")

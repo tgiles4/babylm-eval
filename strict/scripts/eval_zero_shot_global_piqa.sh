@@ -15,7 +15,7 @@
 #   bash scripts/eval_zero_shot_global_piqa.sh MODEL_PATH BACKEND TRACK [EVAL_DIR] [FAST_EVAL_DIR]
 #
 #   MODEL_PATH     HuggingFace repo id or local path to the model.
-#   BACKEND        Evaluation backend (causal, mlm, mntp, enc_dec_mask, enc_dec_prefix).
+#   BACKEND        Evaluation backend (causal, mlm, mntp, enc_dec_mask, enc_dec_prefix, diffusion).
 #   TRACK          strict | strict-small (strict-small stops at the 100M checkpoint).
 #   EVAL_DIR       Optional full-eval data dir for the main checkpoint (default evaluation_data/full_eval).
 #   FAST_EVAL_DIR  Optional fast-eval data dir for intermediate checkpoints (default evaluation_data/fast_eval).
@@ -25,6 +25,19 @@ BACKEND=$2
 TRACK=$3
 EVAL_DIR=${4:-"evaluation_data/full_eval"}
 FAST_EVAL_DIR=${5:-"evaluation_data/fast_eval"}
+
+MC_NUM=${MC_NUM:-128}
+MC_BATCH_SIZE=${MC_BATCH_SIZE:-16}
+if [[ "$BACKEND" == "diffusion" ]]; then
+    BATCH_SIZE=${BATCH_SIZE:-8}
+else
+    BATCH_SIZE=${BATCH_SIZE:-64}
+fi
+
+DIFFUSION_ARGS=""
+if [[ "$BACKEND" == "diffusion" ]]; then
+    DIFFUSION_ARGS="--mc_num ${MC_NUM} --mc_batch_size ${MC_BATCH_SIZE}"
+fi
 
 # Run the two GlobalPIQA tasks for one checkpoint against the given data dir.
 # With no revision argument the pipeline defaults to the "main" checkpoint;
@@ -37,8 +50,8 @@ run_global_piqa () {
         revision_args="--revision_name $revision"
     fi
 
-    python -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name $MODEL_PATH --backend $BACKEND --task global_piqa_parallel --data_path "${data_dir}/global_piqa_parallel" --save_predictions $revision_args
-    python -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name $MODEL_PATH --backend $BACKEND --task global_piqa_nonparallel --data_path "${data_dir}/global_piqa_nonparallel" --save_predictions $revision_args
+    python -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name $MODEL_PATH --backend $BACKEND --task global_piqa_parallel --data_path "${data_dir}/global_piqa_parallel" --save_predictions --batch_size $BATCH_SIZE $revision_args $DIFFUSION_ARGS
+    python -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name $MODEL_PATH --backend $BACKEND --task global_piqa_nonparallel --data_path "${data_dir}/global_piqa_nonparallel" --save_predictions --batch_size $BATCH_SIZE $revision_args $DIFFUSION_ARGS
 }
 
 # Main checkpoint -> full_eval

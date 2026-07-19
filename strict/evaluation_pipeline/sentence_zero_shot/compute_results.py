@@ -12,6 +12,9 @@ from collections import Counter, defaultdict
 from tqdm import tqdm
 import argparse
 
+from evaluation_pipeline.sentence_zero_shot.diffusion_likelihood import get_log_likelihood
+from evaluation_pipeline.sentence_zero_shot.energy_score import get_energy_score
+
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
 # Tasks whose candidates are scored by length-normalized completion log-probability
@@ -42,6 +45,10 @@ def compute_results(args: argparse.ArgumentParser, model: torch.nn.Module, datal
             return compute_causal_results(args, model, dataloader, temperatures)
         elif args.backend in ["mlm", "mntp"]:
             return compute_mlm_results(args, model, dataloader, temperatures)
+        elif args.backend == "diffusion":
+            return compute_diffusion_results(args, model, dataloader, temperatures)
+        elif args.backend == "energy":
+            return compute_energy_results(args, model, dataloader, temperatures)
         elif args.backend == "enc_dec_mask":
             return compute_enc_dec_mask_results(args, model, dataloader, temperatures)
         elif args.backend == "enc_dec_prefix":
@@ -132,6 +139,157 @@ def compute_causal_results(args, model, dataloader, temperatures):
                 all_log_probs[temp].append(phrase_log_probs.cpu())
 
         rank_and_evaluate(args, subset_to_stats, all_log_probs, raw_sentences, labels, metadatas, uids, predictions)
+
+    if args.save_predictions:
+        for i in temperatures:
+            temp_pred = dict()
+            for k, v in predictions[i].items():
+                temp_pred[k] = dict()
+                temp_pred[k]["predictions"] = v
+            final_predictions[i] = temp_pred
+
+    return subset_to_stats, final_predictions
+
+
+def compute_diffusion_results(args, model, dataloader, temperatures):
+    """Rank candidates with LLaDA Monte Carlo conditional log-likelihood.
+
+    Prompt tokens (phrase_mask == 0) stay clean; only the completion / answer
+    region is masked in the forward process. See diffusion_likelihood.py.
+    """
+    subset_to_stats = {temp: {} for temp in temperatures}
+    predictions = {temp: defaultdict(list) for temp in subset_to_stats}
+    final_predictions = {temp: {} for temp in subset_to_stats}
+
+    mask_id = getattr(model.config, "mask_token_id", None)
+    if mask_id is None:
+        raise ValueError(
+            "Diffusion backend requires model.config.mask_token_id to be set."
+        )
+
+    for raw_sentences, sentence_dict, labels, metadatas, uids, _images in tqdm(dataloader):
+        update_subset_to_stats(subset_to_stats, metadatas)
+        num_sentences = len([key for key in sentence_dict.keys() if key.endswith("attn_mask")])
+        prefixes = [f"sentence_{sentence_idx}" for sentence_idx in range(num_sentences)]
+
+        all_log_probs = {temp: [] for temp in subset_to_stats}
+        for prefix in prefixes:
+            tokens = sentence_dict[f"{prefix}_tokens"].to(DEVICE)
+            attn_mask = sentence_dict[f"{prefix}_attn_mask"].to(DEVICE)
+            phrase_mask = sentence_dict[f"{prefix}_phrase_mask"].to(DEVICE)
+            batch_size = tokens.shape[0]
+
+            per_temp_scores = {temp: [] for temp in subset_to_stats}
+            for example_idx in range(batch_size):
+                length = int(attn_mask[example_idx].sum().item())
+                seq = tokens[example_idx, :length]
+                # Prompt = non-completion positions (contiguous prefix for BabyLM tasks).
+                prompt_index = phrase_mask[example_idx, :length] == 0
+                answer_len = int((~prompt_index).sum().item())
+                if answer_len < 1:
+                    # Fall back to scoring the full sequence if no completion span.
+                    prompt_index = torch.zeros(length, dtype=torch.bool, device=DEVICE)
+                    answer_len = length
+
+                for temp in subset_to_stats:
+                    log_lik = get_log_likelihood(
+                        model,
+                        seq,
+                        prompt_index,
+                        mask_id=mask_id,
+                        mc_num=args.mc_num,
+                        mc_batch_size=args.mc_batch_size,
+                        temperature=temp,
+                    )
+                    if args.task in LENGTH_NORMALIZED_TASKS:
+                        log_lik = log_lik / max(answer_len, 1)
+                    per_temp_scores[temp].append(log_lik)
+
+            for temp in subset_to_stats:
+                all_log_probs[temp].append(torch.tensor(per_temp_scores[temp]))
+
+        rank_and_evaluate(
+            args, subset_to_stats, all_log_probs, raw_sentences, labels, metadatas, uids, predictions
+        )
+
+    if args.save_predictions:
+        for i in temperatures:
+            temp_pred = dict()
+            for k, v in predictions[i].items():
+                temp_pred[k] = dict()
+                temp_pred[k]["predictions"] = v
+            final_predictions[i] = temp_pred
+
+    return subset_to_stats, final_predictions
+
+
+def compute_energy_results(args, model, dataloader, temperatures):
+    """Rank candidates with Monte Carlo mean EDLM transition energy.
+
+    Same masking layout as diffusion (prompt clean, answer masked). Score is
+    -mean E(x_t, x_0) so higher-is-better matches rank_and_evaluate.
+    Temperature is unused (energy head has no softmax); kept for API parity.
+    """
+    subset_to_stats = {temp: {} for temp in temperatures}
+    predictions = {temp: defaultdict(list) for temp in subset_to_stats}
+    final_predictions = {temp: {} for temp in subset_to_stats}
+
+    mask_id = getattr(model.config, "mask_token_id", None)
+    if mask_id is None:
+        raise ValueError(
+            "Energy backend requires model.config.mask_token_id to be set."
+        )
+
+    for raw_sentences, sentence_dict, labels, metadatas, uids, _images in tqdm(dataloader):
+        update_subset_to_stats(subset_to_stats, metadatas)
+        num_sentences = len(
+            [key for key in sentence_dict.keys() if key.endswith("attn_mask")]
+        )
+        prefixes = [f"sentence_{sentence_idx}" for sentence_idx in range(num_sentences)]
+
+        all_log_probs = {temp: [] for temp in subset_to_stats}
+        for prefix in prefixes:
+            tokens = sentence_dict[f"{prefix}_tokens"].to(DEVICE)
+            attn_mask = sentence_dict[f"{prefix}_attn_mask"].to(DEVICE)
+            phrase_mask = sentence_dict[f"{prefix}_phrase_mask"].to(DEVICE)
+            batch_size = tokens.shape[0]
+
+            per_temp_scores = {temp: [] for temp in subset_to_stats}
+            for example_idx in range(batch_size):
+                length = int(attn_mask[example_idx].sum().item())
+                seq = tokens[example_idx, :length]
+                prompt_index = phrase_mask[example_idx, :length] == 0
+                answer_len = int((~prompt_index).sum().item())
+                if answer_len < 1:
+                    prompt_index = torch.zeros(length, dtype=torch.bool, device=DEVICE)
+                    answer_len = length
+
+                score = get_energy_score(
+                    model,
+                    seq,
+                    prompt_index,
+                    mask_id=mask_id,
+                    mc_num=args.mc_num,
+                    mc_batch_size=args.mc_batch_size,
+                )
+                if args.task in LENGTH_NORMALIZED_TASKS:
+                    score = score / max(answer_len, 1)
+                for temp in subset_to_stats:
+                    per_temp_scores[temp].append(score)
+
+            for temp in subset_to_stats:
+                all_log_probs[temp].append(torch.tensor(per_temp_scores[temp]))
+
+        rank_and_evaluate(
+            args,
+            subset_to_stats,
+            all_log_probs,
+            raw_sentences,
+            labels,
+            metadatas,
+            uids,
+            predictions,
+        )
 
     if args.save_predictions:
         for i in temperatures:

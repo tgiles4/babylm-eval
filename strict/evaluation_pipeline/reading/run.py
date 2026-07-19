@@ -97,29 +97,14 @@ if __name__ == "__main__":
 
     model.to(DEVICE)
     model.eval()
-    try:
+    if pathlib.Path(args.model_path_or_name).is_dir():
+        from evaluation_pipeline.tokenizer_utils import load_tokenizer
+
+        tokenizer = load_tokenizer(args.model_path_or_name, args.revision_name)
+    else:
         tokenizer = AutoProcessor.from_pretrained(
             model_path_str, trust_remote_code=True, revision=load_revision
         )
-    except (ValueError, KeyError, OSError):
-        # transformers-5.x-saved checkpoints record tokenizer_class
-        # "TokenizersBackend", unknown to 4.x. Prefer AutoTokenizer (shimmed)
-        # then fall back to tokenizer.json.
-        import evaluation_pipeline  # noqa: F401
-        from transformers import AutoTokenizer, PreTrainedTokenizerFast
-
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_path_str, trust_remote_code=True, revision=load_revision
-            )
-        except (ValueError, KeyError, OSError):
-            tok_json = model_path / "tokenizer.json"
-            if tok_json.is_file():
-                tokenizer = PreTrainedTokenizerFast(tokenizer_file=str(tok_json))
-            else:
-                tokenizer = PreTrainedTokenizerFast.from_pretrained(
-                    model_path_str, revision=load_revision
-                )
 
     if args.backend == "causal":
         p2_function = get_p2

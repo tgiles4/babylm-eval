@@ -2,81 +2,42 @@
 # -------------------
 from __future__ import annotations
 
-import evaluation_pipeline  # noqa: F401 — TokenizersBackend shim for transformers 4.x
 from transformers import AutoProcessor
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import argparse
 import json
-import pathlib
 from typing import TYPE_CHECKING
 
 from evaluation_pipeline.sentence_zero_shot.read_files import read_files
+from evaluation_pipeline.tokenizer_utils import load_tokenizer
+import pathlib
 
 if TYPE_CHECKING:
     from PIL.Image import Image
     from transformers.processing_utils import ProcessorMixin
 
 
-def _resolve_local_hf_dir(model_path_or_name: str, revision_name: str | None) -> tuple[str, str | None]:
-    """Map runs/.../hf + revision subdir to the concrete export directory.
-
-    HuggingFace ``revision=`` is a git ref, not a subdirectory name. Our exports
-    live at ``hf/<revision>/``, so point at that path and drop revision.
-    """
-    if not revision_name:
-        return model_path_or_name, None
-    base = pathlib.Path(model_path_or_name)
-    candidate = base / revision_name
-    if base.is_dir() and candidate.is_dir() and (
-        (candidate / "tokenizer.json").is_file() or (candidate / "config.json").is_file()
-    ):
-        return str(candidate), None
-    return model_path_or_name, revision_name
-
-
-def _load_processor(model_path_or_name: str, revision_name: str | None):
-    tok_dir, revision = _resolve_local_hf_dir(model_path_or_name, revision_name)
-    try:
-        return AutoProcessor.from_pretrained(
-            tok_dir,
-            padding_side="right",
-            revision=revision,
-            trust_remote_code=True,
-        )
-    except (ValueError, KeyError, OSError):
-        # text-only / transformers-5 TokenizersBackend exports
-        from transformers import AutoTokenizer, PreTrainedTokenizerFast
-
-        try:
-            return AutoTokenizer.from_pretrained(
-                tok_dir,
-                padding_side="right",
-                revision=revision,
-                trust_remote_code=True,
-            )
-        except (ValueError, KeyError, OSError):
-            tok_json = pathlib.Path(tok_dir) / "tokenizer.json"
-            if tok_json.is_file():
-                return PreTrainedTokenizerFast(
-                    tokenizer_file=str(tok_json),
-                    padding_side="right",
-                )
-            return PreTrainedTokenizerFast.from_pretrained(
-                tok_dir,
-                padding_side="right",
-                revision=revision,
-            )
-
-
 class CompletionRankingDataset(Dataset):
 
     def __init__(self: CompletionRankingDataset, args: argparse.Namespace):
         self.backend: str = args.backend
-        self.processor: ProcessorMixin = _load_processor(
-            args.model_path_or_name, args.revision_name
-        )
+        model_path = pathlib.Path(args.model_path_or_name)
+        if model_path.is_dir():
+            # Local ebdlm exports: never use from_pretrained (TokenizersBackend).
+            self.processor = load_tokenizer(
+                args.model_path_or_name,
+                args.revision_name,
+                padding_side="right",
+            )
+        else:
+            self.processor: ProcessorMixin = AutoProcessor.from_pretrained(
+                args.model_path_or_name,
+                padding_side="right",
+                revision=args.revision_name,
+                trust_remote_code=True,
+            )
         self.tokenizer = self.processor.tokenizer if hasattr(self.processor, "tokenizer") else self.processor
 
         if self.tokenizer.pad_token_id is None:

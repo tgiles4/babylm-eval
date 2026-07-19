@@ -63,9 +63,19 @@ echo "Installing ${EVAL_REPO}/strict/requirements.txt into ${VENV}"
 echo "Downloading evaluation_data (scripts.download_evals)"
 "${PYTHON}" -m scripts.download_evals
 
+# Zip entries are already prefixed evaluation_data/fast_eval/ewok_fast/...;
+# extract into strict/ (.), not into evaluation_data/fast_eval/.
 if [ -f evaluation_data/fast_eval/ewok_fast.zip ] && [ ! -d evaluation_data/fast_eval/ewok_fast ]; then
   echo "Unzipping ewok_fast.zip"
-  unzip -o -P BabyLM2025 evaluation_data/fast_eval/ewok_fast.zip -d evaluation_data/fast_eval
+  "${PYTHON}" - <<'PY'
+from pathlib import Path
+import zipfile
+
+zip_path = Path("evaluation_data/fast_eval/ewok_fast.zip")
+with zipfile.ZipFile(zip_path) as zf:
+    zf.extractall(".", pwd=b"BabyLM2025")
+print("extracted", zip_path)
+PY
 fi
 
 for p in \

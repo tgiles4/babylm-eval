@@ -24,7 +24,7 @@ EXTRA_ARGS=""
 if [[ "$BACKEND" == "diffusion" || "$BACKEND" == "energy" ]]; then
     EXTRA_ARGS="--mc_num ${MC_NUM} --mc_batch_size ${MC_BATCH_SIZE}"
 fi
-if [[ "$BACKEND" == "energy" ]]; then
+if [[ "$BACKEND" == "diffusion" || "$BACKEND" == "energy" ]]; then
     EXTRA_ARGS="${EXTRA_ARGS} --ebdlm_root ${EBDLM_ROOT}"
 fi
 

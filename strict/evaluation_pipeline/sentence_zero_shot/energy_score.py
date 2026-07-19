@@ -69,6 +69,57 @@ def get_energy_score(
     return -sum(energies) / len(energies)
 
 
+def _ensure_ebdlm_on_path(ebdlm_root: str | Path | None) -> None:
+    import sys
+
+    root = Path(ebdlm_root) if ebdlm_root else Path(
+        r"C:\Users\tgiles\dev\ebdlm-babylm"
+    )
+    root_str = str(root.resolve())
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
+
+def _resolve_hf_load_path(
+    model_path_or_name: str,
+    revision: str | None,
+) -> tuple[str | Path, dict]:
+    """Return (load_path, from_pretrained kwargs) for a local HF export layout."""
+    load_kwargs: dict = {
+        "trust_remote_code": True,
+        "attn_implementation": "sdpa",
+    }
+    if revision is not None:
+        load_kwargs["revision"] = revision
+
+    path = Path(model_path_or_name)
+    if path.is_dir() and revision and (path / revision).is_dir():
+        load_path: str | Path = path / revision
+        load_kwargs.pop("revision", None)
+    else:
+        load_path = path if path.exists() else model_path_or_name
+    return load_path, load_kwargs
+
+
+def load_lladamdlm(
+    model_path_or_name: str,
+    *,
+    revision: str | None = None,
+    dtype: torch.dtype | None = None,
+    ebdlm_root: str | Path | None = None,
+) -> torch.nn.Module:
+    """Load a LLaDAMDLM HF export (same path training uses for generation)."""
+    _ensure_ebdlm_on_path(ebdlm_root)
+    from models.ebdlm import LLaDAMDLM  # noqa: WPS433
+
+    load_path, load_kwargs = _resolve_hf_load_path(model_path_or_name, revision)
+    if dtype is not None:
+        load_kwargs["torch_dtype"] = dtype
+    model = LLaDAMDLM.from_pretrained(load_path, **load_kwargs)
+    model.eval()
+    return model
+
+
 def load_edlm(
     model_path_or_name: str,
     *,
@@ -82,34 +133,17 @@ def load_edlm(
     ``LLaDAMDLM.from_pretrained``, wrap it, then restore ``energy_head`` weights
     from the checkpoint state dict.
     """
-    import sys
-
-    root = Path(ebdlm_root) if ebdlm_root else Path(
-        r"C:\Users\tgiles\dev\ebdlm-babylm"
+    backbone = load_lladamdlm(
+        model_path_or_name,
+        revision=revision,
+        dtype=dtype,
+        ebdlm_root=ebdlm_root,
     )
-    root_str = str(root.resolve())
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
+    from models.ebdlm import EDLM  # noqa: WPS433
 
-    from models.ebdlm import EDLM, LLaDAMDLM  # noqa: WPS433
-
-    load_kwargs: dict = {"trust_remote_code": True}
-    if revision is not None:
-        load_kwargs["revision"] = revision
-    if dtype is not None:
-        load_kwargs["dtype"] = dtype
-
-    path = Path(model_path_or_name)
-    # Local HF dirs: prefer subdirectory revision if present (BabyLM layout).
-    if path.is_dir() and revision and (path / revision).is_dir():
-        load_path = path / revision
-        load_kwargs.pop("revision", None)
-    else:
-        load_path = path if path.exists() else model_path_or_name
-
-    backbone = LLaDAMDLM.from_pretrained(load_path, **load_kwargs)
     model = EDLM(backbone)
 
+    load_path, _ = _resolve_hf_load_path(model_path_or_name, revision)
     state = _load_state_dict(load_path)
     energy_state = {
         k[len("energy_head.") :]: v

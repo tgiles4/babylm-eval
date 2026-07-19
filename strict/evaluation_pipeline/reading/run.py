@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument("--number_of_mask_tokens_to_append", default=3, type=int, help="When using either mlm or mntp, the number of mask tokens to append to approximate causal generation.")
     parser.add_argument("--mc_num", default=128, type=int, help="Monte Carlo samples for diffusion reading (multi-token words).")
     parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples for diffusion reading.")
+    parser.add_argument("--ebdlm_root", default=None, type=str, help="Path to ebdlm-babylm repo (needed to import LLaDAMDLM for --backend diffusion).")
     parser.add_argument("--revision_name", default=None, type=str, help="Name of the checkpoint/version of the model to test. (If None, the main will be used)")
 
     args = parser.parse_args()
@@ -72,12 +73,22 @@ if __name__ == "__main__":
         "trust_remote_code": True,
         "revision": load_revision,
     }
-    if DEVICE.type == "cuda":
-        load_kwargs["dtype"] = torch.bfloat16
+    model_dtype = torch.bfloat16 if DEVICE.type == "cuda" else None
+    if model_dtype is not None:
+        load_kwargs["torch_dtype"] = model_dtype
 
     if args.backend == "causal":
         model = AutoModelForCausalLM.from_pretrained(model_path_str, **load_kwargs)
-    elif args.backend in ["mlm", "mntp", "diffusion"]:
+    elif args.backend == "diffusion":
+        from evaluation_pipeline.sentence_zero_shot.energy_score import load_lladamdlm
+
+        model = load_lladamdlm(
+            args.model_path_or_name,
+            revision=args.revision_name,
+            dtype=model_dtype,
+            ebdlm_root=args.ebdlm_root,
+        )
+    elif args.backend in ["mlm", "mntp"]:
         model = AutoModelForMaskedLM.from_pretrained(model_path_str, **load_kwargs)
     elif args.backend == "enc_dec":
         model = AutoModelForSeq2SeqLM.from_pretrained(model_path_str, **load_kwargs)

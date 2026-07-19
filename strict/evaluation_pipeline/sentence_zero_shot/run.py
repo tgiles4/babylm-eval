@@ -58,8 +58,11 @@ def get_model(args: argparse.ArgumentParser):
     if pathlib.Path(model_path) != pathlib.Path(args.model_path_or_name):
         load_kwargs.pop("revision", None)
 
-    if DEVICE.type == "cuda":
-        load_kwargs["dtype"] = torch.bfloat16
+    model_dtype = torch.bfloat16 if DEVICE.type == "cuda" else None
+    if model_dtype is not None:
+        # transformers 4.51 expects torch_dtype; plain dtype= pollutes config and
+        # crashes config.to_json_string() with numpy.dtype.
+        load_kwargs["torch_dtype"] = model_dtype
 
     if args.backend == "energy":
         from evaluation_pipeline.sentence_zero_shot.energy_score import load_edlm
@@ -67,10 +70,19 @@ def get_model(args: argparse.ArgumentParser):
         model = load_edlm(
             args.model_path_or_name,
             revision=args.revision_name,
-            dtype=load_kwargs.get("dtype"),
+            dtype=model_dtype,
             ebdlm_root=args.ebdlm_root,
         )
-    elif args.backend in ["mlm", "mntp", "diffusion"]:
+    elif args.backend == "diffusion":
+        from evaluation_pipeline.sentence_zero_shot.energy_score import load_lladamdlm
+
+        model = load_lladamdlm(
+            args.model_path_or_name,
+            revision=args.revision_name,
+            dtype=model_dtype,
+            ebdlm_root=args.ebdlm_root,
+        )
+    elif args.backend in ["mlm", "mntp"]:
         model = AutoModelForMaskedLM.from_pretrained(model_path, **load_kwargs)
     elif args.backend == "causal":
         model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)

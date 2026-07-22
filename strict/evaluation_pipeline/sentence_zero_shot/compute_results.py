@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from tqdm import tqdm
 import argparse
 
-from evaluation_pipeline.sentence_zero_shot.diffusion_likelihood import get_log_likelihood
+from evaluation_pipeline.sentence_zero_shot.diffusion_likelihood import get_log_likelihoods
 from evaluation_pipeline.sentence_zero_shot.energy_score import get_energy_score
 
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -179,34 +179,36 @@ def compute_diffusion_results(args, model, dataloader, temperatures):
             phrase_mask = sentence_dict[f"{prefix}_phrase_mask"].to(DEVICE)
             batch_size = tokens.shape[0]
 
-            per_temp_scores = {temp: [] for temp in subset_to_stats}
+            # Prompt = non-completion positions; pad positions count as prompt
+            # so they are never masked. Empty answer → score the full sequence.
+            prompt_index = phrase_mask == 0
+            prompt_index = prompt_index | (attn_mask == 0)
+            answer_lens = (~prompt_index & attn_mask.bool()).sum(dim=1)
             for example_idx in range(batch_size):
-                length = int(attn_mask[example_idx].sum().item())
-                seq = tokens[example_idx, :length]
-                # Prompt = non-completion positions (contiguous prefix for BabyLM tasks).
-                prompt_index = phrase_mask[example_idx, :length] == 0
-                answer_len = int((~prompt_index).sum().item())
-                if answer_len < 1:
-                    # Fall back to scoring the full sequence if no completion span.
-                    prompt_index = torch.zeros(length, dtype=torch.bool, device=DEVICE)
-                    answer_len = length
+                if answer_lens[example_idx] < 1:
+                    length = int(attn_mask[example_idx].sum().item())
+                    prompt_index[example_idx, :length] = False
+                    prompt_index[example_idx, length:] = True
+                    answer_lens[example_idx] = length
 
-                for temp in subset_to_stats:
-                    log_lik = get_log_likelihood(
-                        model,
-                        seq,
-                        prompt_index,
-                        mask_id=mask_id,
-                        mc_num=args.mc_num,
-                        mc_batch_size=args.mc_batch_size,
-                        temperature=temp,
-                    )
-                    if args.task in LENGTH_NORMALIZED_TASKS:
-                        log_lik = log_lik / max(answer_len, 1)
-                    per_temp_scores[temp].append(log_lik)
+            per_temp_scores = {}
+            for temp in subset_to_stats:
+                log_liks = get_log_likelihoods(
+                    model,
+                    tokens,
+                    attn_mask,
+                    prompt_index,
+                    mask_id=mask_id,
+                    mc_num=args.mc_num,
+                    mc_batch_size=args.mc_batch_size,
+                    temperature=temp,
+                )
+                if args.task in LENGTH_NORMALIZED_TASKS:
+                    log_liks = log_liks / answer_lens.clamp(min=1).float()
+                per_temp_scores[temp] = log_liks.detach().cpu()
 
             for temp in subset_to_stats:
-                all_log_probs[temp].append(torch.tensor(per_temp_scores[temp]))
+                all_log_probs[temp].append(per_temp_scores[temp])
 
         rank_and_evaluate(
             args, subset_to_stats, all_log_probs, raw_sentences, labels, metadatas, uids, predictions

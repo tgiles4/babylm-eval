@@ -37,7 +37,7 @@ parser.add_argument("--temperature_interval", default=0.05, type=float, help="St
 parser.add_argument("--batch_size", default=64, type=int, help="Batch size for evaluation")
 parser.add_argument("--non_causal_batch_size", default=64, type=int, help="Mini-batch size to process each batch of inputs involving masked tokens")
 parser.add_argument("--mc_num", default=128, type=int, help="Monte Carlo samples for diffusion likelihood (LLaDA Eq. 6).")
-parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples for the diffusion backend.")
+parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples per example for the diffusion backend. GPU batch ≈ batch_size × mc_batch_size.")
 parser.add_argument("--full_sentence_scores", action="store_true", help="Whether to use the entire sentence to calculate the sentence scores rather than just the completion. (Only implemented for EWoK)")
 parser.add_argument("--save_predictions", action="store_true", help="Whether or not to save predictions.")
 parser.add_argument("--revision_name", default=None, type=str, help="Name of the checkpoint/version of the model to test. (If None, the main will be used)")

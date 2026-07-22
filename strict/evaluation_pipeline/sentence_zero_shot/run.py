@@ -39,7 +39,7 @@ def _parse_arguments():
     parser.add_argument("--batch_size", default=64, type=int, help="Batch size for evaluation")
     parser.add_argument("--non_causal_batch_size", default=64, type=int, help="Mini-batch size to process each batch of inputs involving masked tokens")
     parser.add_argument("--mc_num", default=128, type=int, help="Monte Carlo samples for diffusion/energy scoring.")
-    parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples for diffusion/energy backends.")
+    parser.add_argument("--mc_batch_size", default=16, type=int, help="Mini-batch size over Monte Carlo samples per example for diffusion/energy. Diffusion GPU batch ≈ batch_size × mc_batch_size.")
     parser.add_argument("--ebdlm_root", default=None, type=str, help="Path to ebdlm-babylm repo (needed to import EDLM for --backend energy).")
     parser.add_argument("--full_sentence_scores", action="store_true", help="Whether to use the entire sentence to calculate the sentence scores rather than just the completion. (Only implemented for EWoK)")
     parser.add_argument("--save_predictions", action="store_true", help="Whether or not to save predictions.")

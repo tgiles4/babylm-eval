@@ -75,12 +75,16 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONPATH="${EVAL_REPO}/strict${PYTHONPATH:+:${PYTHONPATH}}"
 export EBDLM_ROOT="${EBDLM_REPO}"
+# Diffusion GPU batch ≈ BATCH_SIZE × MC_BATCH_SIZE.
+# Profiled on RTX 5070 Ti 16GB (bf16 LLaDA, vocab 16k): at seq≈64,
+# ~2700 rows fit locally → A100-80GB ≈ 13k+ rows. With mc_batch_size=128,
+# batch_size=64 (8192 rows) is comfortable for BLiMP-length inputs on A100.
 export MC_NUM="${MC_NUM:-128}"
 export MC_BATCH_SIZE="${MC_BATCH_SIZE:-128}"
 export BATCH_SIZE="${BATCH_SIZE:-64}"
 
 echo "RUN_NAME=${RUN_NAME} REVISION=${REVISION} BACKEND=${BACKEND}"
-echo "PYTHON=${PYTHON} BATCH_SIZE=${BATCH_SIZE} MC_NUM=${MC_NUM} MC_BATCH_SIZE=${MC_BATCH_SIZE}"
+echo "PYTHON=${PYTHON} BATCH_SIZE=${BATCH_SIZE} MC_NUM=${MC_NUM} MC_BATCH_SIZE=${MC_BATCH_SIZE} (gpu_batch≈$((BATCH_SIZE * MC_BATCH_SIZE)))"
 
 srun --export=ALL env \
   PATH="$(dirname "${PYTHON}"):${PATH}" \
